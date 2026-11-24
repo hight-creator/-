@@ -7,6 +7,9 @@ edition = "2021"
 # 画面描画はCPUのみ（GPU・OpenGL・DirectX・ドライバー不要）
 egui = "0.33"
 egui_software_backend = "=0.0.2"
+# コピー＆ペースト（Ctrl+C/V）を有効にする
+egui-winit = { version = "0.33", default-features = false, features = ["clipboard"] }
+arboard = { version = "3", default-features = false }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "socks", "gzip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "fs", "time"] }
