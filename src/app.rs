@@ -3,7 +3,7 @@
 use crate::config::{self, Config, HttpMethod, ProviderConfig, Quality, ResponseFormat};
 use crate::downloader;
 use crate::scraper::{self, Pick, Pool, StoryItem};
-use eframe::egui::{
+use egui::{
     self, pos2, vec2, Align2, Color32, FontData, FontDefinitions, FontFamily, FontId, Rect, Sense,
     TextureHandle, TextureOptions,
 };
@@ -26,7 +26,7 @@ pub fn setup_fonts(ctx: &egui::Context) {
         if let Ok(bytes) = std::fs::read(dir.join(name)) {
             fonts
                 .font_data
-                .insert("jp".to_owned(), FontData::from_owned(bytes));
+                .insert("jp".to_owned(), FontData::from_owned(bytes).into());
             // 既定フォントの後ろに追加 → 英数字は既定、日本語だけフォールバックで描画
             for fam in [FontFamily::Proportional, FontFamily::Monospace] {
                 fonts.families.entry(fam).or_default().push("jp".to_owned());
@@ -683,7 +683,7 @@ impl App {
                     }
                     title.push_str(&format!("  ({count}件)"));
                     egui::CollapsingHeader::new(title)
-                        .id_source(user.clone())
+                        .id_salt(user.clone())
                         .default_open(true)
                         .show(ui, |ui| match &status {
                             Status::Loading => {
@@ -939,8 +939,8 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl egui_software_backend::App for App {
+    fn update(&mut self, ctx: &egui::Context, _backend: &mut egui_software_backend::SoftwareBackend) {
         self.poll();
         self.top_panel(ctx);
         self.bottom_panel(ctx);
@@ -960,10 +960,6 @@ impl eframe::App for App {
             self.save();
             self.dirty = false;
         }
-    }
-
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save();
     }
 }
 
