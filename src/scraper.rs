@@ -75,6 +75,8 @@ pub enum FetchError {
     Config(String),
     Network(String),
     Status(u16),
+    /// 401/403。相手に拒否された（本文の抜粋つき）
+    Blocked(u16, String),
     /// 429。値は相手が指定した待機秒数（本文の retryAfter → Retry-After → 60）
     RateLimited(u64),
     /// 相手サービスが返したエラーメッセージ（4xxの本文の error）
@@ -88,7 +90,7 @@ impl FetchError {
     /// プロキシを替えて再試行する価値があるか
     pub fn retryable(&self) -> bool {
         match self {
-            FetchError::Network(_) | FetchError::RateLimited(_) => true,
+            FetchError::Network(_) | FetchError::RateLimited(_) | FetchError::Blocked(..) => true,
             FetchError::Status(s) => matches!(*s, 401 | 403 | 408 | 429) || *s >= 500,
             _ => false,
         }
@@ -101,6 +103,7 @@ impl fmt::Display for FetchError {
             FetchError::Config(m) => write!(f, "設定エラー: {m}"),
             FetchError::Network(e) => write!(f, "通信エラー: {e}"),
             FetchError::Status(s) => write!(f, "HTTP {s}"),
+            FetchError::Blocked(s, m) => write!(f, "HTTP {s} 拒否されました: {m}"),
             FetchError::RateLimited(s) => write!(f, "リクエスト制限 (429)：{s}秒待機が必要です"),
             FetchError::Server(m) => write!(f, "サービスのエラー: {m}"),
             FetchError::Private => write!(f, "非公開アカウントです"),
@@ -281,8 +284,18 @@ fn parse_item_mapped(v: &Value, p: &ProviderConfig, username: &str) -> Option<St
         .get(&p.key_thumb)
         .and_then(Value::as_str)
         .map(unescape)
-        .unwrap_or_else(|| if is_video { String::new() } else { media.clone() });
-    let image_url = if is_video { thumb.clone() } else { media.clone() };
+        .unwrap_or_else(|| {
+            if is_video {
+                String::new()
+            } else {
+                media.clone()
+            }
+        });
+    let image_url = if is_video {
+        thumb.clone()
+    } else {
+        media.clone()
+    };
     Some(StoryItem {
         id: v
             .get(&p.key_id)
@@ -320,7 +333,11 @@ pub fn parse_json(root: &Value, p: &ProviderConfig, username: &str) -> Vec<Story
 
 // ───────── HTML解析（正規表現） ─────────
 
-pub fn parse_html(body: &str, p: &ProviderConfig, username: &str) -> Result<Vec<StoryItem>, FetchError> {
+pub fn parse_html(
+    body: &str,
+    p: &ProviderConfig,
+    username: &str,
+) -> Result<Vec<StoryItem>, FetchError> {
     let re = Regex::new(&p.html_regex)
         .map_err(|e| FetchError::Config(format!("html_regex が不正です: {e}")))?;
     let mut order: Vec<String> = Vec::new();
@@ -334,7 +351,9 @@ pub fn parse_html(body: &str, p: &ProviderConfig, username: &str) -> Result<Vec<
         let is_video = kind.contains("video") || looks_video(&url);
         let w = grp("w").and_then(|s| s.trim().parse().ok()).unwrap_or(0u32);
         let h = grp("h").and_then(|s| s.trim().parse().ok()).unwrap_or(0u32);
-        let ts = grp("time").and_then(|s| s.trim().parse::<i64>().ok()).unwrap_or(0);
+        let ts = grp("time")
+            .and_then(|s| s.trim().parse::<i64>().ok())
+            .unwrap_or(0);
         let id = grp("id").unwrap_or_else(|| url_id(&url));
         let variant = MediaVariant {
             width: w,
@@ -349,7 +368,8 @@ pub fn parse_html(body: &str, p: &ProviderConfig, username: &str) -> Result<Vec<
             }
             continue;
         }
-        let thumb = grp("thumb").unwrap_or_else(|| if is_video { String::new() } else { url.clone() });
+        let thumb =
+            grp("thumb").unwrap_or_else(|| if is_video { String::new() } else { url.clone() });
         order.push(id.clone());
         groups.insert(
             id.clone(),
@@ -366,7 +386,10 @@ pub fn parse_html(body: &str, p: &ProviderConfig, username: &str) -> Result<Vec<
         );
     }
 
-    let mut out: Vec<StoryItem> = order.into_iter().filter_map(|id| groups.remove(&id)).collect();
+    let mut out: Vec<StoryItem> = order
+        .into_iter()
+        .filter_map(|id| groups.remove(&id))
+        .collect();
     out.sort_by_key(|i| i.taken_at); // 同時刻は元の並びを保つ（安定ソート）
     Ok(out)
 }
@@ -469,7 +492,27 @@ impl Pool {
         if let Some(c) = map.get(&key) {
             return Ok(c.clone());
         }
+        let mut dh = reqwest::header::HeaderMap::new();
+        for (k, v) in [
+            ("accept", "application/json, text/plain, */*"),
+            ("accept-language", "ja,en-US;q=0.9,en;q=0.8"),
+            (
+                "sec-ch-ua",
+                "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"",
+            ),
+            ("sec-ch-ua-mobile", "?0"),
+            ("sec-ch-ua-platform", "\"Windows\""),
+            ("sec-fetch-dest", "empty"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-site", "same-site"),
+        ] {
+            dh.insert(
+                reqwest::header::HeaderName::from_static(k),
+                reqwest::header::HeaderValue::from_static(v),
+            );
+        }
         let mut b = Client::builder()
+            .default_headers(dh)
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
@@ -540,7 +583,8 @@ async fn send(
             ))
         }
         404 => Err(FetchError::NotFound),
-        401 | 403 | 408 => Err(FetchError::Status(status)),
+        401 | 403 => Err(FetchError::Blocked(status, block_hint(&text))),
+        408 => Err(FetchError::Status(status)),
         400..=499 => {
             let msg = json
                 .as_ref()
@@ -554,6 +598,31 @@ async fn send(
         }
         s => Err(FetchError::Status(s)),
     }
+}
+
+/// 403等の本文から原因の手がかりを作る（Cloudflareのチャレンジ判定＋先頭の抜粋）
+fn block_hint(text: &str) -> String {
+    let low = text.to_lowercase();
+    let kind = if low.contains("just a moment")
+        || low.contains("cf-chl")
+        || low.contains("challenge-platform")
+    {
+        "Cloudflareのボット確認(チャレンジ)"
+    } else if low.contains("error 1020") || low.contains("access denied") {
+        "Cloudflareのアクセス拒否(1020)"
+    } else if low.contains("cloudflare") {
+        "Cloudflareによる拒否"
+    } else {
+        "原因不明"
+    };
+    let snippet: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(120)
+        .collect();
+    format!("{kind} / 本文: {snippet}")
 }
 
 fn is_private(v: &Value, p: &ProviderConfig) -> bool {
@@ -589,7 +658,9 @@ fn parse_response(
 }
 
 /// ポーリング間隔（ミリ秒）。相手サイト自身のJSと同じ段階的な間隔。
-const POLL_DELAYS_MS: [u64; 12] = [1000, 1500, 2000, 2000, 2500, 3000, 4000, 5000, 5000, 6000, 8000, 8000];
+const POLL_DELAYS_MS: [u64; 12] = [
+    1000, 1500, 2000, 2000, 2500, 3000, 4000, 5000, 5000, 6000, 8000, 8000,
+];
 
 /// 1回分の取得：リクエスト → 解析 →（準備中なら）ポーリング
 async fn try_fetch(
@@ -626,7 +697,9 @@ async fn try_fetch(
 
     if items.is_empty()
         && !p.private_marker.trim().is_empty()
-        && text.to_lowercase().contains(&p.private_marker.trim().to_lowercase())
+        && text
+            .to_lowercase()
+            .contains(&p.private_marker.trim().to_lowercase())
     {
         return Err(FetchError::Private);
     }
@@ -653,7 +726,8 @@ pub async fn fetch_stories(
                 continue;
             }
         };
-        pool.throttle(proxy.as_deref(), provider.min_interval_ms).await;
+        pool.throttle(proxy.as_deref(), provider.min_interval_ms)
+            .await;
         match try_fetch(&client, provider, username).await {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -662,10 +736,9 @@ pub async fn fetch_stories(
                 }
                 match (&e, proxy.as_deref()) {
                     // 429: 相手の指定秒数だけ、その接続元を休ませる
-                    (FetchError::RateLimited(s), k) => pool.penalize_for(
-                        k.unwrap_or(""),
-                        Duration::from_secs((*s).clamp(5, 600)),
-                    ),
+                    (FetchError::RateLimited(s), k) => {
+                        pool.penalize_for(k.unwrap_or(""), Duration::from_secs((*s).clamp(5, 600)))
+                    }
                     (_, Some(p)) => pool.penalize(p),
                     _ => {}
                 }
@@ -744,10 +817,22 @@ mod tests {
         assert_eq!(items[0].thumb_url, "https://x/a_320.jpg");
         assert_eq!(items[0].max_resolution(), (1080, 1920));
         let v = &items[0].videos;
-        assert_eq!(pick_video(v, Pick::Quality(Quality::Best)).unwrap().width, 1080);
-        assert_eq!(pick_video(v, Pick::Quality(Quality::Medium)).unwrap().width, 720);
-        assert_eq!(pick_video(v, Pick::Quality(Quality::Low)).unwrap().width, 480);
-        assert_eq!(pick_video(v, Pick::Exact(720, 1280)).unwrap().url, "https://x/v720.mp4");
+        assert_eq!(
+            pick_video(v, Pick::Quality(Quality::Best)).unwrap().width,
+            1080
+        );
+        assert_eq!(
+            pick_video(v, Pick::Quality(Quality::Medium)).unwrap().width,
+            720
+        );
+        assert_eq!(
+            pick_video(v, Pick::Quality(Quality::Low)).unwrap().width,
+            480
+        );
+        assert_eq!(
+            pick_video(v, Pick::Exact(720, 1280)).unwrap().url,
+            "https://x/v720.mp4"
+        );
     }
 
     #[test]
@@ -793,7 +878,10 @@ mod tests {
         let items = parse_html(r#"<img src="https://c/a/b.jpg?x=1">"#, &p, "u").unwrap();
         assert_eq!(items.len(), 1);
         p.html_regex = "(".into();
-        assert!(matches!(parse_html("", &p, "u"), Err(FetchError::Config(_))));
+        assert!(matches!(
+            parse_html("", &p, "u"),
+            Err(FetchError::Config(_))
+        ));
     }
 
     fn proxied(inner: &str, sig: &str) -> String {
@@ -832,12 +920,18 @@ mod tests {
         let (items, pending) = parse_response(&pend, &p, "u").unwrap();
         assert!(items.is_empty() && pending);
         let private = json!({"profile":{"isPrivate":true},"stories":[]}).to_string();
-        assert!(matches!(parse_response(&private, &p, "u"), Err(FetchError::Private)));
+        assert!(matches!(
+            parse_response(&private, &p, "u"),
+            Err(FetchError::Private)
+        ));
     }
 
     #[test]
     fn proxy_normalize() {
-        assert_eq!(normalize_proxy("1.2.3.4:8080").unwrap(), "http://1.2.3.4:8080");
+        assert_eq!(
+            normalize_proxy("1.2.3.4:8080").unwrap(),
+            "http://1.2.3.4:8080"
+        );
         assert_eq!(
             normalize_proxy("socks5://u:p@1.2.3.4:1080").unwrap(),
             "socks5://u:p@1.2.3.4:1080"
