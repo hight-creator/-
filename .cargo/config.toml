@@ -1,0 +1,3 @@
+# VC++ランタイムDLLへの依存をなくし、完全単体EXEにする
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
