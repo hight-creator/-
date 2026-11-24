@@ -899,6 +899,68 @@ impl App {
                         .collect();
                     ch = true;
                 }
+                ui.horizontal(|ui| {
+                    if ui.button("📋 クリップボードから追加ヘッダに貼り付け（1行追加）").clicked() {
+                        if let Some(t) = clipboard_text() {
+                            let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                            if !t.is_empty() {
+                                if !self.headers_text.is_empty() && !self.headers_text.ends_with('\n') {
+                                    self.headers_text.push('\n');
+                                }
+                                self.headers_text.push_str(&t);
+                                p.headers = self
+                                    .headers_text
+                                    .lines()
+                                    .map(str::trim)
+                                    .filter(|l| !l.is_empty())
+                                    .map(String::from)
+                                    .collect();
+                                ch = true;
+                            }
+                        }
+                    }
+                    if ui.button("追加ヘッダを全消去").clicked() {
+                        self.headers_text.clear();
+                        p.headers.clear();
+                        ch = true;
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("📋 Cookie値の貼り付け（cf_clearance）").clicked() {
+                        if let Some(t) = clipboard_text() {
+                            let v: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+                            if !v.is_empty() {
+                                let mut lines: Vec<String> = self
+                                    .headers_text
+                                    .lines()
+                                    .filter(|l| !l.trim_start().to_lowercase().starts_with("cookie:"))
+                                    .map(String::from)
+                                    .collect();
+                                lines.push(format!("Cookie: cf_clearance={v}"));
+                                self.headers_text = lines.join("\n");
+                                p.headers = lines;
+                                ch = true;
+                            }
+                        }
+                    }
+                    if ui.button("📋 User-Agentの貼り付け").clicked() {
+                        if let Some(t) = clipboard_text() {
+                            let v = t.trim().to_string();
+                            if !v.is_empty() {
+                                let mut lines: Vec<String> = self
+                                    .headers_text
+                                    .lines()
+                                    .filter(|l| !l.trim_start().to_lowercase().starts_with("user-agent:"))
+                                    .map(String::from)
+                                    .collect();
+                                lines.push(format!("User-Agent: {v}"));
+                                self.headers_text = lines.join("\n");
+                                p.headers = lines;
+                                ch = true;
+                            }
+                        }
+                    }
+                });
                 if p.format == ResponseFormat::Json {
                     ui.label("JSON抽出ルール（image_versions2 / video_versions 形式なら自動認識）");
                     ch |= provider_field(ui, "配列のパス", &mut p.items_path);
@@ -961,6 +1023,11 @@ impl egui_software_backend::App for App {
             self.dirty = false;
         }
     }
+}
+
+/// クリップボードの文字列を取得（ソフトウェア描画ではCtrl+Vが効かないことがあるため直接読む）
+fn clipboard_text() -> Option<String> {
+    arboard::Clipboard::new().ok()?.get_text().ok()
 }
 
 fn provider_field(ui: &mut egui::Ui, label: &str, val: &mut String) -> bool {
