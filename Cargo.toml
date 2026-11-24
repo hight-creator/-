@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = { version = "0.29", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
+# 画面描画はCPUのみ（GPU・OpenGL・DirectX・ドライバー不要）
+egui = "0.33"
+egui_software_backend = "=0.0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 reqwest = { version = "0.12", default-features = false, features = ["native-tls", "socks", "gzip"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "fs", "time"] }
