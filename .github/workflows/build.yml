@@ -28,12 +28,41 @@ jobs:
           export RUSTFLAGS="-L native=$(pwd -W)/mpvdev/x"
           cargo build --release --target x86_64-pc-windows-gnu
 
+      # GPUドライバなしのPCでは vulkan-1.dll が無く起動できないため、
+      # libmpv-2.dll が必要とする関数名を自動抽出して、中身が空の代替DLLを作る
+      - name: Make stub vulkan-1.dll
+        shell: bash
+        run: |
+          python -m pip install pefile
+          mkdir -p stub
+          python - <<'EOF'
+          import pefile
+          pe = pefile.PE("mpvdev/x/libmpv-2.dll")
+          names = []
+          print("== libmpv-2.dll imports ==")
+          for e in pe.DIRECTORY_ENTRY_IMPORT:
+              dll = e.dll.decode().lower()
+              print(dll)
+              if dll == "vulkan-1.dll":
+                  for f in e.imports:
+                      if f.name:
+                          names.append(f.name.decode())
+          print("vulkan functions:", len(names))
+          with open("stub/vulkan_stub.c", "w") as f:
+              for n in names:
+                  f.write('__declspec(dllexport) void* %s(void){return 0;}\n' % n)
+              f.write('__declspec(dllexport) void* vkGetInstanceProcAddr(void){return 0;}\n') if "vkGetInstanceProcAddr" not in names else None
+              f.write('__declspec(dllexport) void* vkGetDeviceProcAddr(void){return 0;}\n') if "vkGetDeviceProcAddr" not in names else None
+          EOF
+          gcc -shared -O1 -o stub/vulkan-1.dll stub/vulkan_stub.c
+
       - name: Package
         shell: bash
         run: |
           mkdir out
           cp target/x86_64-pc-windows-gnu/release/blocknoise-player.exe out/
           cp mpvdev/x/libmpv-2.dll out/
+          cp stub/vulkan-1.dll out/
           cp README.txt out/
 
       - uses: actions/upload-artifact@v4
