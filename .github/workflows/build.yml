@@ -9,6 +9,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check uploaded files
+        shell: bash
+        run: |
+          ls -la
+          for f in Cargo.toml README.txt make_compat.py src/main.rs; do
+            if [ ! -f "$f" ]; then
+              echo "::error::$f がリポジトリにありません。zipの中身を全部アップロードし直してください(make_compat.py はルート直下)"
+              exit 1
+            fi
+          done
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-gnu
@@ -33,10 +44,14 @@ jobs:
       #  - 古いWindowsに無いAPIを肩代わりする bnps.dll を作り、exeとlibmpvをそれに向ける
       - name: Make compatible package
         shell: bash
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: utf-8
         run: |
+          which gcc && gcc --version | head -1
           python -m pip install pefile
           mkdir out
-          python tools/make_compat.py \
+          python make_compat.py \
             --exe target/x86_64-pc-windows-gnu/release/blocknoise-player.exe \
             --dll mpvdev/x/libmpv-2.dll \
             --out out
