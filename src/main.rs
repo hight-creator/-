@@ -320,13 +320,20 @@ fn main() {
         init.set_property("vd-lavc-skipframe", "none")?;
         init.set_property("vd-lavc-fast", "no")?;
         init.set_property("vd-lavc-threads", 0i64)?;
-        init.set_property("deband", "yes")?;
-        init.set_property("scale", "lanczos")?;
-        init.set_property("cscale", "lanczos")?;
+        // GPUドライバなし(ソフトウェア描画)でも重くならないよう、描画側は軽くする
+        // (ブロックノイズはデコード側の設定で抑えているので、描画を軽くしても影響しない)
+        init.set_property("deband", "no")?;
+        init.set_property("scale", "bilinear")?;
+        init.set_property("cscale", "bilinear")?;
+        init.set_property("dscale", "bilinear")?;
         init.set_property("framedrop", "vo")?;
         // ===== 表示 =====
+        // Direct3D 11 を明示。GPUドライバが無い場合はWindows標準のソフトウェア描画(WARP)を使う
         init.set_property("vo", "gpu")?;
         init.set_property("gpu-api", "d3d11")?;
+        init.set_property("gpu-context", "d3d11")?;
+        init.set_property("d3d11-warp", "auto")?;
+        init.set_property("d3d11-flip", "no")?;
         // ===== 音量ブースト 最大200% =====
         init.set_property("volume-max", 200i64)?;
         init.set_property("volume", 100i64)?;
