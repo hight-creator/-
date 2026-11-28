@@ -312,7 +312,7 @@ fn on_right_click(mpv: &Mpv, st: &State) {
 }
 
 fn main() {
-    let mpv = Mpv::with_initializer(|init| {
+    let mut mpv = Mpv::with_initializer(|init| {
         // ===== ブロックノイズ対策(最優先)=====
         init.set_property("hwdec", "no")?;
         init.set_property("vd-lavc-skiploopfilter", "none")?;
