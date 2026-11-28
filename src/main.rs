@@ -311,43 +311,129 @@ fn on_right_click(mpv: &Mpv, st: &State) {
     }
 }
 
+#[link(name = "user32")]
+extern "system" {
+    fn MessageBoxW(
+        hwnd: *mut core::ffi::c_void,
+        text: *const u16,
+        caption: *const u16,
+        utype: u32,
+    ) -> i32;
+}
+
+/// エラーを画面に表示する(windows_subsystem=windows だと何も出ず原因が分からなくなるため)
+fn msgbox(text: &str) {
+    let t: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    let c: Vec<u16> = "BlockNoise Player".encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), 0x10);
+    }
+}
+
+/// CIの自己診断用: ウィンドウなしで libmpv が読み込め、デコードが最後まで動くかを確認する
+fn selftest() -> i32 {
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default();
+    let out = dir.join("selftest.txt");
+    let mut mpv = match Mpv::with_initializer(|init| {
+        let _ = init.set_property("vo", "null");
+        let _ = init.set_property("ao", "null");
+        let _ = init.set_property("idle", "yes");
+        Ok(())
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = std::fs::write(&out, format!("NG init: {:?}", e));
+            return 2;
+        }
+    };
+    let ver = mpv.get_property::<String>("mpv-version").unwrap_or_default();
+    let _ = mpv.command(
+        "loadfile",
+        &["av://lavfi:testsrc=size=320x240:rate=25:duration=1"],
+    );
+    let start = std::time::Instant::now();
+    let mut done = false;
+    while start.elapsed().as_secs() < 25 {
+        if let Some(Ok(Event::EndFile(_))) = mpv.event_context_mut().wait_event(0.5) {
+            done = true;
+            break;
+        }
+    }
+    let _ = std::fs::write(
+        &out,
+        format!("{} version={}", if done { "OK" } else { "NG timeout" }, ver),
+    );
+    if done {
+        0
+    } else {
+        1
+    }
+}
+
 fn main() {
-    let mut mpv = Mpv::with_initializer(|init| {
+    std::panic::set_hook(Box::new(|info| {
+        msgbox(&format!("エラーが発生しました:\n{}", info));
+    }));
+
+    if std::env::var("BNP_SELFTEST").is_ok() {
+        std::process::exit(selftest());
+    }
+
+    let mut mpv = match Mpv::with_initializer(|init| {
+        // 個々のオプションは失敗しても起動を止めない(バージョン差で未対応の名前があっても動かすため)
+        macro_rules! opt {
+            ($k:expr, $v:expr) => {
+                let _ = init.set_property($k, $v);
+            };
+        }
         // ===== ブロックノイズ対策(最優先)=====
-        init.set_property("hwdec", "no")?;
-        init.set_property("vd-lavc-skiploopfilter", "none")?;
-        init.set_property("vd-lavc-skipidct", "none")?;
-        init.set_property("vd-lavc-skipframe", "none")?;
-        init.set_property("vd-lavc-fast", "no")?;
-        init.set_property("vd-lavc-threads", 0i64)?;
+        opt!("hwdec", "no");
+        opt!("vd-lavc-skiploopfilter", "none");
+        opt!("vd-lavc-skipidct", "none");
+        opt!("vd-lavc-skipframe", "none");
+        opt!("vd-lavc-fast", "no");
+        opt!("vd-lavc-threads", 0i64);
         // GPUドライバなし(ソフトウェア描画)でも重くならないよう、描画側は軽くする
         // (ブロックノイズはデコード側の設定で抑えているので、描画を軽くしても影響しない)
-        init.set_property("deband", "no")?;
-        init.set_property("scale", "bilinear")?;
-        init.set_property("cscale", "bilinear")?;
-        init.set_property("dscale", "bilinear")?;
-        init.set_property("framedrop", "vo")?;
+        opt!("deband", "no");
+        opt!("scale", "bilinear");
+        opt!("cscale", "bilinear");
+        opt!("dscale", "bilinear");
+        opt!("framedrop", "vo");
         // ===== 表示 =====
         // Direct3D 11 を明示。GPUドライバが無い場合はWindows標準のソフトウェア描画(WARP)を使う
-        init.set_property("vo", "gpu")?;
-        init.set_property("gpu-api", "d3d11")?;
-        init.set_property("gpu-context", "d3d11")?;
-        init.set_property("d3d11-warp", "auto")?;
-        init.set_property("d3d11-flip", "no")?;
+        opt!("vo", "gpu");
+        opt!("gpu-api", "d3d11");
+        opt!("gpu-context", "d3d11");
+        opt!("d3d11-warp", "auto");
+        opt!("d3d11-flip", "no");
+        // ボタンの日本語表示用フォント
+        opt!("osd-font", "Meiryo");
         // ===== 音量ブースト 最大200% =====
-        init.set_property("volume-max", 200i64)?;
-        init.set_property("volume", 100i64)?;
+        opt!("volume-max", 200i64);
+        opt!("volume", 100i64);
         // ===== 動作 =====
-        init.set_property("osc", "no")?;
-        init.set_property("input-default-bindings", "no")?;
-        init.set_property("input-vo-keyboard", "yes")?;
-        init.set_property("force-window", "yes")?;
-        init.set_property("idle", "yes")?;
-        init.set_property("keep-open", "yes")?;
-        init.set_property("title", "BlockNoise Player")?;
+        opt!("osc", "no");
+        opt!("input-default-bindings", "no");
+        opt!("input-vo-keyboard", "yes");
+        opt!("force-window", "yes");
+        opt!("idle", "yes");
+        opt!("keep-open", "yes");
+        opt!("title", "BlockNoise Player");
         Ok(())
-    })
-    .expect("mpv init failed (libmpv-2.dll が exe と同じフォルダにありますか?)");
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            msgbox(&format!(
+                "プレイヤーを初期化できませんでした。\nlibmpv-2.dll などが exe と同じフォルダにあるか確認してください。\n\n{:?}",
+                e
+            ));
+            std::process::exit(1);
+        }
+    };
 
     // ===== キー割り当て(ボタンと同じ操作のショートカット)=====
     let keys: &[(&str, &str)] = &[
